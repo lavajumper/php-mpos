@@ -1,5 +1,7 @@
 #!/bin/bash
 
+echo "Please be aware: This cron is deprecated and will be removed. Please read: https://github.com/MPOS/php-mpos/wiki/Cronjobs#setup"
+sleep 2
 
 #########################
 #                       #
@@ -10,7 +12,7 @@
 PHP_BIN=$( which php )
 
 # List of cruns to execute
-CRONS="findblock.php proportional_payout.php pplns_payout.php pps_payout.php blockupdate.php manual_payout.php auto_payout.php tickerupdate.php notifications.php statistics.php archive_cleanup.php"
+CRONS="findblock.php proportional_payout.php pplns_payout.php pps_payout.php blockupdate.php payouts.php tickerupdate.php notifications.php statistics.php tables_cleanup.php"
 
 # Output additional runtime information
 VERBOSE="0"
@@ -29,17 +31,32 @@ SUBFOLDER=""
 #                                                              #
 ################################################################
 
+# Mac OS detection
+OS=`uname`
+
+
+case "$OS" in
+  Darwin) READLINK=$( which greadlink ) ;;
+  *) READLINK=$( which readlink ) ;;
+esac
+
+if [[ ! -x $READLINK ]]; then
+  echo "readlink not found, please install first";
+  exit 1;
+fi
+
 # My own name
 ME=$( basename $0 )
 
 # Overwrite some settings via command line arguments
-while getopts "hvp:d:" opt; do
+while getopts "hfvp:d:" opt; do
   case "$opt" in
     h|\?)
       echo "Usage: $0 [-v] [-p PHP_BINARY] [-d SUBFOLDER]";
       exit 0
       ;;
     v) VERBOSE=1 ;;
+    f) PHP_OPTS="$PHP_OPTS -f";;
     p) PHP_BIN=$OPTARG ;;
     d) SUBFOLDER=$OPTARG ;;
     :)
@@ -52,7 +69,7 @@ done
 # Path to PID file, needs to be writable by user running this
 PIDFILE="${BASEPATH}/${SUBFOLDER}/${ME}.pid"
 # Clean PIDFILE path
-PIDFILE=$(readlink -m "$PIDFILE")
+PIDFILE=$($READLINK -m "$PIDFILE")
 
 # Create folders recursively if necessary
 if ! $(mkdir -p $( dirname $PIDFILE)); then
@@ -62,7 +79,7 @@ fi
 
 # Find scripts path
 if [[ -L $0 ]]; then
-  CRONHOME=$( dirname $( readlink $0 ) )
+  CRONHOME=$( dirname $( $READLINK $0 ) )
 else
   CRONHOME=$( dirname $0 )
 fi
@@ -100,11 +117,14 @@ if [[ -e $PIDFILE ]]; then
 fi
 
 # Write our PID file
-echo $PID > $PIDFILE
+echo $PID 2>/dev/null 1> $PIDFILE || {
+  echo 'Failed to create PID file, aborting';
+  exit 1
+}
 
 for cron in $CRONS; do
   [[ $VERBOSE == 1 ]] && echo "Running $cron, check logfile for details"
-  $PHP_BIN $cron
+  $PHP_BIN $cron $PHP_OPTS
 done
 
 # Remove pidfile

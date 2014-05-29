@@ -27,34 +27,55 @@ require_once('shared.inc.php');
 
 if ( $bitcoin->can_connect() !== true ) {
   $log->logFatal("Failed to connect to RPC server\n");
-  $monitoring->setStatus($cron_name . "_active", "yesno", 0); 
-  $monitoring->setStatus($cron_name . "_message", "message", "Unable to connect to RPC server");
-  $monitoring->setStatus($cron_name . "_status", "okerror", 1); 
-  exit(1);
+  $monitoring->endCronjob($cron_name, 'E0006', 1, true);
 }
 
 // Fetch all unconfirmed blocks
-$aAllBlocks = $block->getAllUnconfirmed($config['confirmations']);
+$aAllBlocks = $block->getAllUnconfirmed(max($config['network_confirmations'],$config['confirmations']));
 
-$log->logInfo("ID\tHeight\tBlockhash\tConfirmations");
+$header = false;
 foreach ($aAllBlocks as $iIndex => $aBlock) {
-  $aBlockInfo = $bitcoin->query('getblock', $aBlock['blockhash']);
+  $strLogMask = "| %10.10s | %10.10s | %-64.64s | %5.5s | %5.5s | %-8.8s";
+  $aBlockInfo = $bitcoin->getblock($aBlock['blockhash']);
   // Fetch this blocks transaction details to find orphan blocks
-  $aTxDetails = $bitcoin->query('gettransaction', $aBlockInfo['tx'][0]);
-  $log->logInfo($aBlock['id'] . "\t" . $aBlock['height'] .  "\t" . $aBlock['blockhash'] . "\t" . $aBlock['confirmations'] . " -> " . $aBlockInfo['confirmations']);
+  $aTxDetails = $bitcoin->gettransaction($aBlockInfo['tx'][0]);
   if ($aTxDetails['details'][0]['category'] == 'orphan') {
     // We have an orphaned block, we need to invalidate all transactions for this one
     if ($block->setConfirmations($aBlock['id'], -1)) {
-      $log->logInfo("    Block marked as orphan");
+      $status = 'ORPHAN';
     } else {
+      $status = 'ERROR';
       $log->logError("    Block became orphaned but unable to update database entries");
     }
+    if (!$header) {
+      $log->logInfo(sprintf($strLogMask, 'ID', 'Height', 'Blockhash', 'Old', 'New', 'Status'));
+      $header = true;
+    }
+    $log->logInfo(sprintf($strLogMask, $aBlock['id'], $aBlock['height'], $aBlock['blockhash'], $aBlock['confirmations'], $aBlockInfo['confirmations'], $status));
     continue;
   }
-  if ($aBlock['confirmations'] == $aBlockInfo['confirmations']) {
-    $log->logDebug('    No update needed');
-  } else if (!$block->setConfirmations($aBlock['id'], $aBlockInfo['confirmations'])) {
-    $log->logError('    Failed to update block confirmations');
+  if (isset($aBlockInfo['confirmations'])) {
+    $iRPCConfirmations = $aBlockInfo['confirmations'];
+  } else if (isset($aTxDetails['confirmations'])) {
+    $iRPCConfirmations = $aTxDetails['confirmations'];
+  } else {
+    $log->logFatal('    RPC does not return any usable block confirmation information');
+    $monitoring->endCronjob($cron_name, 'E0082', 1, true);
+  }
+  if ($iRPCConfirmations == $aBlock['confirmations']) {
+    continue;
+  } else {
+    if (!$block->setConfirmations($aBlock['id'], $iRPCConfirmations)) {
+      $log->logError('    Failed to update block confirmations: ' . $block->getCronMessage());
+      $status = 'ERROR';
+    } else {
+      $status = 'UPDATED';
+    }
+    if (!$header) {
+      $log->logInfo(sprintf($strLogMask, 'ID', 'Height', 'Blockhash', 'Old', 'New', 'Status'));
+      $header = true;
+    }
+    $log->logInfo(sprintf($strLogMask, $aBlock['id'], $aBlock['height'], $aBlock['blockhash'], $aBlock['confirmations'], $iRPCConfirmations, $status));
   }
 }
 

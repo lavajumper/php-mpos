@@ -1,1 +1,0 @@
-[ {$WEBSITENAME} ] {$SUBJECT}
